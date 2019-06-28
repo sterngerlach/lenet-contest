@@ -1,0 +1,7 @@
+
+# .gitignore
+
+# Unnecessary files
+txt/
+lenet
+
