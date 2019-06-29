@@ -1,10 +1,10 @@
 
 # Makefile
 
-CFLAGS = -I. -O0
+CFLAGS = -I.
 
-lenet: lenet.cu cnnfunc.cu 
-	nvcc $(CFLAGS) -o lenet lenet.cu cnnfunc.cu
+lenet: lenet.cu cnnfunc.cu cnnfunc_gpu.cu
+	nvcc $(CFLAGS) -o lenet lenet.cu cnnfunc.cu cnnfunc_gpu.cu
 
 clean:
 	rm -f lenet

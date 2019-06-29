@@ -32,13 +32,14 @@
 #define FC2_B_SIZE      (10)
 #define FC2_OUT_SIZE    (10)
 
-#define CUDA_SAFE_CALL(func)                                                \
+#define CUDA_SAFE_CALL(call)                                                \
     do {                                                                    \
-        cudaError_t err = (func);                                           \
+        cudaError_t err = (call);                                           \
+                                                                            \
         if (err != cudaSuccess) {                                           \
-            fprintf(stderr, "[Error] %s (error code: %d) at %s line %d\n",  \
-                    cudaGetErrorString(err), err, __FILE__, __LINE__);      \
-            exit(err);                                                      \
+            fprintf(stderr, "Error (%s:%d), code: %d, reason: %s\n",        \
+                    __FILE__, __LINE__, err, cudaGetErrorString(err));      \
+            exit(EXIT_FAILURE);                                             \
         }                                                                   \
     } while (0)
 
@@ -48,86 +49,178 @@ int main()
     char imageFileName[64];
     char s[32];
 
-    float* image;
-    float* conv1_w;
-    float* conv1_b;
-    float* conv1_out;
-    float* pool1_out;
+    float* hostImage;
+
+    float* hostConv1Weight;
+    float* hostConv1Bias;
+    float* hostConv1Out;
+    float* hostPool1Out;
   
-    float* conv2_w;
-    float* conv2_b;
-    float* conv2_out;
-    float* pool2_out;
+    float* hostConv2Weight;
+    float* hostConv2Bias;
+    float* hostConv2Out;
+    float* hostPool2Out;
 
-    float* fc1_w;
-    float* fc1_b;
-    float* fc1_out;
+    float* hostFc1Weight;
+    float* hostFc1Bias;
+    float* hostFc1Out;
 
-    float* fc2_w;
-    float* fc2_b;
-    float* fc2_out;
+    float* hostFc2Weight;
+    float* hostFc2Bias;
+    float* hostFc2Out;
+    
+    float* devImage;
+
+    float* devConv1Weight;
+    float* devConv1Bias;
+    float* devConv1Out;
+    float* devPool1Out;
+
+    float* devConv2Weight;
+    float* devConv2Bias;
+    float* devConv2Out;
+    float* devPool2Out;
+
+    float* devFc1Weight;
+    float* devFc1Bias;
+    float* devFc1Out;
+
+    float* devFc2Weight;
+    float* devFc2Bias;
+    float* devFc2Out;
+
+    float* gpuFc2Out;
+
+    dim3 block;
+    dim3 grid;
 
     cudaEvent_t startEvent;
     cudaEvent_t stopEvent;
     float elapsedTime;
-
+    
     cudaEventCreate(&startEvent);
-      cudaEventCreate(&stopEvent);
+    cudaEventCreate(&stopEvent);
 
     printf("/// LeNet ///\n");
     fflush(stdout);
-  
-    printf("Memory allocation ...\n");
+    
+    printf("Allocating host memory ...\n");
     fflush(stdout);
 
-    image = (float*)malloc(sizeof(float) * IMAGE_SIZE);
+    hostImage = (float*)malloc(sizeof(float) * IMAGE_SIZE);
 
-    conv1_w = (float*)malloc(sizeof(float) * CONV1_W_SIZE);
-    conv1_b = (float*)malloc(sizeof(float) * CONV1_B_SIZE);
-    conv1_out = (float*)malloc(sizeof(float) * CONV1_OUT_SIZE);
-    pool1_out = (float*)malloc(sizeof(float) * POOL1_OUT_SIZE);
+    hostConv1Weight = (float*)malloc(sizeof(float) * CONV1_W_SIZE);
+    hostConv1Bias = (float*)malloc(sizeof(float) * CONV1_B_SIZE);
+    hostConv1Out = (float*)malloc(sizeof(float) * CONV1_OUT_SIZE);
+    hostPool1Out = (float*)malloc(sizeof(float) * POOL1_OUT_SIZE);
     
-    conv2_w = (float*)malloc(sizeof(float) * CONV2_W_SIZE);
-    conv2_b = (float*)malloc(sizeof(float) * CONV2_B_SIZE);
-    conv2_out = (float*)malloc(sizeof(float) * CONV2_OUT_SIZE);
-    pool2_out = (float*)malloc(sizeof(float) * POOL2_OUT_SIZE);
+    hostConv2Weight = (float*)malloc(sizeof(float) * CONV2_W_SIZE);
+    hostConv2Bias = (float*)malloc(sizeof(float) * CONV2_B_SIZE);
+    hostConv2Out = (float*)malloc(sizeof(float) * CONV2_OUT_SIZE);
+    hostPool2Out = (float*)malloc(sizeof(float) * POOL2_OUT_SIZE);
 
-    fc1_w = (float*)malloc(sizeof(float) * FC1_W_SIZE);
-    fc1_b = (float*)malloc(sizeof(float) * FC1_B_SIZE);
-    fc1_out = (float*)malloc(sizeof(float) * FC1_OUT_SIZE);
+    hostFc1Weight = (float*)malloc(sizeof(float) * FC1_W_SIZE);
+    hostFc1Bias = (float*)malloc(sizeof(float) * FC1_B_SIZE);
+    hostFc1Out = (float*)malloc(sizeof(float) * FC1_OUT_SIZE);
 
-    fc2_w = (float*)malloc(sizeof(float) * FC2_W_SIZE);
-    fc2_b = (float*)malloc(sizeof(float) * FC2_B_SIZE);
-    fc2_out = (float*)malloc(sizeof(float) * FC2_OUT_SIZE);
+    hostFc2Weight = (float*)malloc(sizeof(float) * FC2_W_SIZE);
+    hostFc2Bias = (float*)malloc(sizeof(float) * FC2_B_SIZE);
+    hostFc2Out = (float*)malloc(sizeof(float) * FC2_OUT_SIZE);
+
+    gpuFc2Out = (float*)malloc(sizeof(float) * FC2_OUT_SIZE);
     
-    printf("Reading params ...\n");
-
-    /* Print input image values */
-    print_params("IMAGE", image, IMAGE_SIZE);
-
+    printf("Reading parameters ...\n");
+    
     /* Read Conv1 layer parameters */
-    read_params("./txt/conv1_w.txt", conv1_w, CONV1_W_SIZE);
-    print_params("CONV1_W", conv1_w, CONV1_W_SIZE);
-    read_params("./txt/conv1_b.txt", conv1_b, CONV1_B_SIZE);
-    print_params("CONV1_B", conv1_b, CONV1_B_SIZE);
+    read_params("./txt/conv1_w.txt", hostConv1Weight, CONV1_W_SIZE);
+    print_params("CONV1_W", hostConv1Weight, CONV1_W_SIZE);
+    read_params("./txt/conv1_b.txt", hostConv1Bias, CONV1_B_SIZE);
+    print_params("CONV1_B", hostConv1Bias, CONV1_B_SIZE);
     
     /* Read Conv2 layer parameters */
-    read_params("./txt/conv2_w.txt", conv2_w, CONV2_W_SIZE);
-    print_params("CONV2_W", conv2_w, CONV2_W_SIZE);
-    read_params("./txt/conv2_b.txt", conv2_b, CONV2_B_SIZE);
-    print_params("CONV2_B", conv2_b, CONV2_B_SIZE);
+    read_params("./txt/conv2_w.txt", hostConv2Weight, CONV2_W_SIZE);
+    print_params("CONV2_W", hostConv2Weight, CONV2_W_SIZE);
+    read_params("./txt/conv2_b.txt", hostConv2Bias, CONV2_B_SIZE);
+    print_params("CONV2_B", hostConv2Bias, CONV2_B_SIZE);
     
     /* Read Fc1 layer parameters */
-    read_params("./txt/fc1_w.txt", fc1_w, FC1_W_SIZE);
-    print_params("FC1_W", fc1_w, FC1_W_SIZE);
-    read_params("./txt/fc1_b.txt", fc1_b, FC1_B_SIZE);
-    print_params("FC1_B", fc1_b, FC1_B_SIZE);
+    read_params("./txt/fc1_w.txt", hostFc1Weight, FC1_W_SIZE);
+    print_params("FC1_W", hostFc1Weight, FC1_W_SIZE);
+    read_params("./txt/fc1_b.txt", hostFc1Bias, FC1_B_SIZE);
+    print_params("FC1_B", hostFc1Bias, FC1_B_SIZE);
     
     /* Read Fc2 layer parameters */
-    read_params("./txt/fc2_w.txt", fc2_w, FC2_W_SIZE);
-    print_params("FC2_W", fc2_w, FC2_W_SIZE);
-    read_params("./txt/fc2_b.txt", fc2_b, FC2_B_SIZE);
-    print_params("FC2_B", fc2_b, FC2_B_SIZE);
+    read_params("./txt/fc2_w.txt", hostFc2Weight, FC2_W_SIZE);
+    print_params("FC2_W", hostFc2Weight, FC2_W_SIZE);
+    read_params("./txt/fc2_b.txt", hostFc2Bias, FC2_B_SIZE);
+    print_params("FC2_B", hostFc2Bias, FC2_B_SIZE);
+    
+    printf("Allocating device memory ...\n");
+    
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devImage,
+                              IMAGE_SIZE * sizeof(float)));
+
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devConv1Weight,
+                              CONV1_W_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devConv1Bias,
+                              CONV1_B_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devConv1Out,
+                              CONV1_OUT_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devPool1Out,
+                              POOL1_OUT_SIZE * sizeof(float)));
+
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devConv2Weight,
+                              CONV2_W_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devConv2Bias,
+                              CONV2_B_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devConv2Out,
+                              CONV2_OUT_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devPool2Out,
+                              POOL2_OUT_SIZE * sizeof(float)));
+
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc1Weight,
+                              FC1_W_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc1Bias,
+                              FC1_B_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc1Out,
+                              FC1_OUT_SIZE * sizeof(float)));
+
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc2Weight,
+                              FC2_W_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc2Bias,
+                              FC2_B_SIZE * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc2Out,
+                              FC2_OUT_SIZE * sizeof(float)));
+
+    printf("Transferring weight and bias data from host ...\n");
+    
+    CUDA_SAFE_CALL(cudaMemcpy(devConv1Weight, hostConv1Weight,
+                              CONV1_W_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(devConv1Bias, hostConv1Bias,
+                              CONV1_B_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+
+    CUDA_SAFE_CALL(cudaMemcpy(devConv2Weight, hostConv2Weight,
+                              CONV2_W_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(devConv2Bias, hostConv2Bias,
+                              CONV2_B_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+    
+    CUDA_SAFE_CALL(cudaMemcpy(devFc1Weight, hostFc1Weight,
+                              FC1_W_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(devFc1Bias, hostFc1Bias,
+                              FC1_B_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+
+    CUDA_SAFE_CALL(cudaMemcpy(devFc2Weight, hostFc2Weight,
+                              FC2_W_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
+    CUDA_SAFE_CALL(cudaMemcpy(devFc2Bias, hostFc2Bias,
+                              FC2_B_SIZE * sizeof(float),
+                              cudaMemcpyHostToDevice));
 
     printf("\n");
 
@@ -136,28 +229,38 @@ int main()
         printf("file: %s\n", imageFileName);
         fflush(stdout);
 
-        read_params(imageFileName, image, IMAGE_SIZE);
-        norm_image(image, IMAGE_SIZE);
-        
+        read_params(imageFileName, hostImage, IMAGE_SIZE);
+        norm_image(hostImage, IMAGE_SIZE);
+
+        /* Print pixel values */
+        /* print_params("IMAGE", hostImage, IMAGE_SIZE); */
+
         /* Show image */
-        show_image(image, 28);
+        show_image(hostImage, 28);
 
         printf("\n");
         
-        /* Feed-forward */
+        /* Feed-forward (CPU) */
         printf("Feed forward ...\n");
         fflush(stdout);
 
         cudaEventRecord(startEvent, 0);
 
-        convolution(image, 28, 1, conv1_out, 24, 20, conv1_w, conv1_b, 5, 1);
-        maxpooling(conv1_out, 24, 20, pool1_out, 12, 2, 2);
-        convolution(pool1_out, 12, 20, conv2_out, 8, 50, conv2_w, conv2_b, 5, 1);
-        maxpooling(conv2_out, 8, 50, pool2_out, 4, 2, 2);
-        classifier(pool2_out, 800, fc1_out, 500, fc1_w, fc1_b);
-        relu(fc1_out, 1, 500);
-        classifier(fc1_out, 500, fc2_out, 10, fc2_w, fc2_b);
-        softmax(fc2_out, 10);
+        convolution(hostImage, 28, 1, hostConv1Out, 24, 20,
+                    hostConv1Weight, hostConv1Bias, 5, 1);
+        maxpooling(hostConv1Out, 24, 20, hostPool1Out, 12, 2, 2);
+
+        convolution(hostPool1Out, 12, 20, hostConv2Out, 8, 50,
+                    hostConv2Weight, hostConv2Bias, 5, 1);
+        maxpooling(hostConv2Out, 8, 50, hostPool2Out, 4, 2, 2);
+
+        classifier(hostPool2Out, 800, hostFc1Out, 500,
+                   hostFc1Weight, hostFc1Bias);
+        relu(hostFc1Out, 1, 500);
+
+        classifier(hostFc1Out, 500, hostFc2Out, 10,
+                   hostFc2Weight, hostFc2Bias);
+        softmax(hostFc2Out, 10);
 
         cudaEventRecord(stopEvent, 0);
         cudaEventSynchronize(stopEvent);
@@ -168,7 +271,120 @@ int main()
         printf("\n");
         
         /* Print result */
-        print_all_params(fc2_out, 10);
+        print_all_params(hostFc2Out, 10);
+        printf("\n");
+
+        /* Feed-Forward (GPU) */
+        printf("Feed forward (GPU) ...\n");
+        fflush(stdout);
+
+        cudaEventRecord(startEvent, 0);
+
+        CUDA_SAFE_CALL(cudaMemcpy(devImage, hostImage,
+                                  IMAGE_SIZE * sizeof(float),
+                                  cudaMemcpyHostToDevice));
+        
+        block.x = 32;
+        block.y = 32;
+        block.z = 1;
+
+        grid.x = (24 + block.x - 1) / block.x;
+        grid.y = (24 + block.y - 1) / block.y;
+        grid.z = 20;
+
+        convolution_gpu_naive<<<grid, block>>>(
+            devImage, 28, 1, devConv1Out, 24, 20,
+            devConv1Weight, devConv1Bias, 5, 1);
+        CUDA_SAFE_CALL(cudaGetLastError());
+        
+        block.x = 32;
+        block.y = 32;
+        block.z = 1;
+
+        grid.x = (12 + block.x - 1) / block.x;
+        grid.y = (12 + block.y - 1) / block.y;
+        grid.z = 20;
+
+        maxpooling_gpu_naive<<<grid, block>>>(
+            devConv1Out, 24, 20, devPool1Out, 12, 2, 2);
+        CUDA_SAFE_CALL(cudaGetLastError());
+        
+        block.x = 32;
+        block.y = 32;
+        block.z = 1;
+
+        grid.x = (8 + block.x - 1) / block.x;
+        grid.y = (8 + block.y - 1) / block.y;
+        grid.z = 50;
+
+        convolution_gpu_naive<<<grid, block>>>(
+            devPool1Out, 12, 20, devConv2Out, 8, 50,
+            devConv2Weight, devConv2Bias, 5, 1);
+        
+        block.x = 32;
+        block.y = 32;
+        block.z = 1;
+
+        grid.x = (4 + block.x - 1) / block.x;
+        grid.y = (4 + block.y - 1) / block.y;
+        grid.z = 50;
+
+        maxpooling_gpu_naive<<<grid, block>>>(
+            devConv2Out, 8, 50, devPool2Out, 4, 2, 2);
+        CUDA_SAFE_CALL(cudaGetLastError());
+
+        block.x = 32;
+        block.y = 1;
+        block.z = 1;
+
+        grid.x = (500 + block.x - 1) / block.x;
+        grid.y = 1;
+        grid.z = 1;
+
+        classifier_gpu_naive<<<grid, block>>>(
+            devPool2Out, 800, devFc1Out, 500, devFc1Weight, devFc1Bias);
+        CUDA_SAFE_CALL(cudaGetLastError());
+
+        block.x = 32;
+        block.y = 32;
+        block.z = 1;
+
+        grid.x = (1 + block.x - 1) / block.x;
+        grid.y = (1 + block.y - 1) / block.y;
+        grid.z = 500;
+
+        relu_gpu_naive<<<grid, block>>>(devFc1Out, 1, 500);
+        CUDA_SAFE_CALL(cudaGetLastError());
+
+        block.x = 32;
+        block.y = 1;
+        block.z = 1;
+
+        grid.x = 1;
+        grid.y = 1;
+        grid.z = 1;
+
+        classifier_gpu_naive<<<grid, block>>>(
+            devFc1Out, 500, devFc2Out, 10, devFc2Weight, devFc2Bias);
+        CUDA_SAFE_CALL(cudaGetLastError());
+
+        CUDA_SAFE_CALL(cudaMemcpy(gpuFc2Out, devFc2Out,
+                                  FC2_OUT_SIZE * sizeof(float),
+                                  cudaMemcpyDeviceToHost));
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+
+        softmax(gpuFc2Out, 10);
+
+        cudaEventRecord(stopEvent, 0);
+        cudaEventSynchronize(stopEvent);
+        cudaEventElapsedTime(&elapsedTime, startEvent, stopEvent);
+        
+        printf("\n");
+        printf("GPU: time: %f ms\n", elapsedTime);
+        printf("\n");
+        
+        /* Print result */
+        print_all_params(gpuFc2Out, 10);
         printf("\n");
 
         ++imageCount;
@@ -185,6 +401,53 @@ int main()
         
         break;
     }
+
+    /* Free device memory */
+    CUDA_SAFE_CALL(cudaFree(devImage));
+
+    CUDA_SAFE_CALL(cudaFree(devConv1Weight));
+    CUDA_SAFE_CALL(cudaFree(devConv1Bias));
+    CUDA_SAFE_CALL(cudaFree(devConv1Out));
+    CUDA_SAFE_CALL(cudaFree(devPool1Out));
+    
+    CUDA_SAFE_CALL(cudaFree(devConv2Weight));
+    CUDA_SAFE_CALL(cudaFree(devConv2Bias));
+    CUDA_SAFE_CALL(cudaFree(devConv2Out));
+    CUDA_SAFE_CALL(cudaFree(devPool2Out));
+
+    CUDA_SAFE_CALL(cudaFree(devFc1Weight));
+    CUDA_SAFE_CALL(cudaFree(devFc1Bias));
+    CUDA_SAFE_CALL(cudaFree(devFc1Out));
+
+    CUDA_SAFE_CALL(cudaFree(devFc2Weight));
+    CUDA_SAFE_CALL(cudaFree(devFc2Bias));
+    CUDA_SAFE_CALL(cudaFree(devFc2Out));
+
+    /* Free host memory */
+    free(hostImage);
+
+    free(hostConv1Weight);
+    free(hostConv1Bias);
+    free(hostConv1Out);
+    free(hostPool1Out);
+    
+    free(hostConv2Weight);
+    free(hostConv2Bias);
+    free(hostConv2Out);
+    free(hostPool2Out);
+
+    free(hostFc1Weight);
+    free(hostFc1Bias);
+    free(hostFc1Out);
+    
+    free(hostFc2Weight);
+    free(hostFc2Bias);
+    free(hostFc2Out);
+
+    free(gpuFc2Out);
+
+    /* Reset device */
+    CUDA_SAFE_CALL(cudaDeviceReset());
 
     return EXIT_SUCCESS;
 }
