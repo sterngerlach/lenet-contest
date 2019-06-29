@@ -64,7 +64,7 @@ __global__ void maxpooling_gpu_naive(
         return;
 
     max = -256.0f;
-
+    
     for (krow = 0; krow < ksize; ++krow) {
         for (kcol = 0; kcol < ksize; ++kcol) {
             tmp = devInput[inputOffset + krow * isize + kcol];
@@ -75,6 +75,41 @@ __global__ void maxpooling_gpu_naive(
     }
 
     devOutput[outputIdx] = max;
+}
+
+__global__ void maxpooling_gpu_kernel_2x2(
+    float* devInput, int isize, int ichan,
+    float* devOutput, int osize,
+    int stride)
+{
+    int ocol = threadIdx.x + blockIdx.x * blockDim.x;
+    int orow = threadIdx.y + blockIdx.y * blockDim.y;
+    int och = blockIdx.z;
+
+    float tmp0;
+    float tmp1;
+    float tmp2;
+    float tmp3;
+    float tmp4;
+    float tmp5;
+
+    int outputIdx = och * osize * osize + orow * osize + ocol;
+    int inputOffset = och * isize * isize +
+                      (orow * stride) * isize +
+                      (ocol * stride);
+    
+    if (ocol >= osize || orow >= osize || och >= ichan)
+        return;
+
+    tmp0 = devInput[inputOffset];
+    tmp1 = devInput[inputOffset + 1];
+    tmp2 = devInput[inputOffset + isize];
+    tmp3 = devInput[inputOffset + isize + 1];
+
+    tmp4 = max(tmp0, tmp1);
+    tmp5 = max(tmp2, tmp3);
+
+    devOutput[outputIdx] = max(tmp4, tmp5);
 }
 
 __global__ void relu_gpu_naive(
@@ -124,54 +159,66 @@ __global__ void classifier_gpu_blocked(
 
     int weightIdxBegin = isize * (32 * blockIdx.y);
     int weightIdxEnd = weightIdxBegin + isize;
-    int weightIdxStep = 32;
-    int weightIdx;
-
-    int inputIdxBegin = 0;
-    int inputIdxStep = 32;
-    int outputIdx;
+    int outputIdx = threadIdx.y + blockDim.y * blockIdx.y;
 
     float tmp = 0.0f;
-        
-    __shared__ float subWeight[32][32];
+
     __shared__ float subInput[32];
+    
+    #pragma unroll
+    for (i = weightIdxBegin, j = 0; i < weightIdxEnd; i += 32, j += 32) {
+        if (j + threadIdx.y < isize)
+            subInput[threadIdx.y] = devInput[j + threadIdx.y];
+        else
+            subInput[threadIdx.y] = 0.0f;
 
-    for (i = weightIdxBegin, j = inputIdxBegin;
-         i < weightIdxEnd;
-         i += weightIdxStep, j += inputIdxStep) {
-
-        weightIdx = i + isize * threadIdx.y + threadIdx.x;
+        __syncthreads();
         
-        if (weightIdx < isize * osize)
-            subWeight[threadIdx.y][threadIdx.x] = devWeight[weightIdx];
-
-        /*
         #pragma unroll
         for (k = 0; k < 32; ++k)
-            if (weightIdx + k < isize * osize)
-                subWeight[threadIdx.y][k] = devWeight[weightIdx + k];
-        */
-        
-        if (threadIdx.x == 0 && j + threadIdx.y < isize)
-            subInput[threadIdx.y] = devInput[j + threadIdx.y];
-
-        __syncthreads();
-        
-        if (threadIdx.x == 0) {
-            #pragma unroll
-            for (k = 0; k < 32; ++k)
-                if (weightIdx + k < isize * osize && j + k < isize)
-                    tmp += subWeight[threadIdx.y][k] * subInput[k];
-        }
+            tmp += devWeight[i + isize * threadIdx.y + k] * subInput[k];
 
         __syncthreads();
     }
+
+    if (outputIdx < osize)
+        devOutput[outputIdx] = tmp;
+}
+
+__global__ void classifier_gpu_blocked_and_relu(
+    float* devInput, int isize,
+    float* devOutput, int osize,
+    float* devWeight, float* devBias)
+{
+    int i;
+    int j;
+    int k;
+
+    int weightIdxBegin = isize * (32 * blockIdx.y);
+    int weightIdxEnd = weightIdxBegin + isize;
+    int outputIdx = threadIdx.y + blockDim.y * blockIdx.y;
+
+    float tmp = 0.0f;
+
+    __shared__ float subInput[32];
     
-    if (threadIdx.x == 0) {
-        outputIdx = 32 * blockIdx.y + threadIdx.y;
+    #pragma unroll
+    for (i = weightIdxBegin, j = 0; i < weightIdxEnd; i += 32, j += 32) {
+        if (j + threadIdx.y < isize)
+            subInput[threadIdx.y] = devInput[j + threadIdx.y];
+        else
+            subInput[threadIdx.y] = 0.0f;
 
-        if (outputIdx < osize)
-            devOutput[outputIdx] = tmp;
+        __syncthreads();
+        
+        #pragma unroll
+        for (k = 0; k < 32; ++k)
+            tmp += devWeight[i + isize * threadIdx.y + k] * subInput[k];
+
+        __syncthreads();
     }
+
+    if (outputIdx < osize)
+        devOutput[outputIdx] = tmp * (tmp > 0.0f);
 }
 

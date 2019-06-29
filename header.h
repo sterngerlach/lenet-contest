@@ -54,6 +54,11 @@ __global__ void maxpooling_gpu_naive(
     float* devOutput, int osize,
     int ksize, int stride);
 
+__global__ void maxpooling_gpu_kernel_2x2(
+    float* devInput, int isize, int ichan,
+    float* devOutput, int osize,
+    int stride);
+
 __global__ void relu_gpu_naive(
     float* devInput, int isize, int ichan);
 
@@ -63,6 +68,11 @@ __global__ void classifier_gpu_naive(
     float* devWeight, float* devBias);
 
 __global__ void classifier_gpu_blocked(
+    float* devInput, int isize,
+    float* devOutput, int osize,
+    float* devWeight, float* devBias);
+
+__global__ void classifier_gpu_blocked_and_relu(
     float* devInput, int isize,
     float* devOutput, int osize,
     float* devWeight, float* devBias);

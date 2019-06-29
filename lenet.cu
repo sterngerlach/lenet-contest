@@ -321,8 +321,8 @@ int main()
         grid.y = (12 + block.y - 1) / block.y;
         grid.z = 20;
 
-        maxpooling_gpu_naive<<<grid, block>>>(
-            devConv1Out, 24, 20, devPool1Out, 12, 2, 2);
+        maxpooling_gpu_kernel_2x2<<<grid, block>>>(
+            devConv1Out, 24, 20, devPool1Out, 12, 2);
         CUDA_SAFE_CALL(cudaGetLastError());
         
         block.x = 32;
@@ -345,8 +345,8 @@ int main()
         grid.y = (4 + block.y - 1) / block.y;
         grid.z = 50;
 
-        maxpooling_gpu_naive<<<grid, block>>>(
-            devConv2Out, 8, 50, devPool2Out, 4, 2, 2);
+        maxpooling_gpu_kernel_2x2<<<grid, block>>>(
+            devConv2Out, 8, 50, devPool2Out, 4, 2);
         CUDA_SAFE_CALL(cudaGetLastError());
         
         /*
@@ -361,8 +361,9 @@ int main()
         classifier_gpu_naive<<<grid, block>>>(
             devPool2Out, 800, devFc1Out, 500, devFc1Weight, devFc1Bias);
         */
-
-        block.x = 32;
+        
+        /*
+        block.x = 1;
         block.y = 32;
         block.z = 1;
 
@@ -384,6 +385,19 @@ int main()
 
         relu_gpu_naive<<<grid, block>>>(devFc1Out, 1, 500);
         CUDA_SAFE_CALL(cudaGetLastError());
+        */
+
+        block.x = 1;
+        block.y = 32;
+        block.z = 1;
+
+        grid.x = 1;
+        grid.y = (500 + block.y - 1) / block.y;
+        grid.z = 1;
+
+        classifier_gpu_blocked_and_relu<<<grid, block>>>(
+            devPool2Out, 800, devFc1Out, 500, devFc1Weight, devFc1Bias);
+        CUDA_SAFE_CALL(cudaGetLastError());
         
         /*
         block.x = 32;
@@ -398,7 +412,7 @@ int main()
             devFc1Out, 500, devFc2Out, 10, devFc2Weight, devFc2Bias);
         */
         
-        block.x = 32;
+        block.x = 1;
         block.y = 32;
         block.z = 1;
 
@@ -408,7 +422,6 @@ int main()
 
         classifier_gpu_blocked<<<grid, block>>>(
             devFc1Out, 500, devFc2Out, 10, devFc2Weight, devFc2Bias);
-
         CUDA_SAFE_CALL(cudaGetLastError());
 
         CUDA_SAFE_CALL(cudaMemcpy(gpuFc2Out, devFc2Out,
