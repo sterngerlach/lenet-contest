@@ -113,3 +113,65 @@ __global__ void classifier_gpu_naive(
     devOutput[orow] += devBias[orow];
 }
 
+__global__ void classifier_gpu_blocked(
+    float* devInput, int isize,
+    float* devOutput, int osize,
+    float* devWeight, float* devBias)
+{
+    int i;
+    int j;
+    int k;
+
+    int weightIdxBegin = isize * (32 * blockIdx.y);
+    int weightIdxEnd = weightIdxBegin + isize;
+    int weightIdxStep = 32;
+    int weightIdx;
+
+    int inputIdxBegin = 0;
+    int inputIdxStep = 32;
+    int outputIdx;
+
+    float tmp = 0.0f;
+        
+    __shared__ float subWeight[32][32];
+    __shared__ float subInput[32];
+
+    for (i = weightIdxBegin, j = inputIdxBegin;
+         i < weightIdxEnd;
+         i += weightIdxStep, j += inputIdxStep) {
+
+        weightIdx = i + isize * threadIdx.y + threadIdx.x;
+        
+        if (weightIdx < isize * osize)
+            subWeight[threadIdx.y][threadIdx.x] = devWeight[weightIdx];
+
+        /*
+        #pragma unroll
+        for (k = 0; k < 32; ++k)
+            if (weightIdx + k < isize * osize)
+                subWeight[threadIdx.y][k] = devWeight[weightIdx + k];
+        */
+        
+        if (threadIdx.x == 0 && j + threadIdx.y < isize)
+            subInput[threadIdx.y] = devInput[j + threadIdx.y];
+
+        __syncthreads();
+        
+        if (threadIdx.x == 0) {
+            #pragma unroll
+            for (k = 0; k < 32; ++k)
+                if (weightIdx + k < isize * osize && j + k < isize)
+                    tmp += subWeight[threadIdx.y][k] * subInput[k];
+        }
+
+        __syncthreads();
+    }
+    
+    if (threadIdx.x == 0) {
+        outputIdx = 32 * blockIdx.y + threadIdx.y;
+
+        if (outputIdx < osize)
+            devOutput[outputIdx] = tmp;
+    }
+}
+

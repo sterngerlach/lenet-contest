@@ -62,5 +62,10 @@ __global__ void classifier_gpu_naive(
     float* devOutput, int osize,
     float* devWeight, float* devBias);
 
+__global__ void classifier_gpu_blocked(
+    float* devInput, int isize,
+    float* devOutput, int osize,
+    float* devWeight, float* devBias);
+
 #endif /* HEADER_H */
 
