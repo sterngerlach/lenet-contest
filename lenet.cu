@@ -407,6 +407,8 @@ int main()
 
     printf("GPU implementation is %f times faster than CPU\n",
            hostTimeSum / gpuTimeSum);
+    printf("Average processing time: CPU: %f ms, GPU: %f ms\n",
+           hostTimeSum / 1000.0f, gpuTimeSum / 1000.0f);
 
     /* Free device memory */
     CUDA_SAFE_CALL(cudaFree(devImage));
