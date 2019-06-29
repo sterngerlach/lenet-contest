@@ -168,10 +168,10 @@ __global__ void maxpooling_gpu_kernel_2x2_template(
     tmp2 = devInput[inputOffset + InputSize];
     tmp3 = devInput[inputOffset + InputSize + 1];
 
-    tmp4 = max(tmp0, tmp1);
-    tmp5 = max(tmp2, tmp3);
+    tmp4 = fmaxf(tmp0, tmp1);
+    tmp5 = fmaxf(tmp2, tmp3);
 
-    devOutput[outputIdx] = max(tmp4, tmp5);
+    devOutput[outputIdx] = fmaxf(tmp4, tmp5);
 }
 
 template <int InputSize, int OutputSize>
@@ -207,7 +207,10 @@ __global__ void classifier_gpu_blocked_and_relu_template(
     }
 
     if (outputIdx < OutputSize)
-        devOutput[outputIdx] = tmp * (tmp > 0.0f);
+        if (tmp > 0.0f)
+            devOutput[outputIdx] = tmp;
+        else
+            devOutput[outputIdx] = 0.0f;
 }
 
 template <int InputSize, int OutputSize>
@@ -471,12 +474,12 @@ int main()
         hostTimeSum += (double)elapsedTime;
 
         /* Feed-Forward (GPU) */
-        cudaEventRecord(startEvent, 0);
-        
         CUDA_SAFE_CALL(cudaMemcpy(devImage, hostImage,
                                   IMAGE_SIZE * sizeof(float),
                                   cudaMemcpyHostToDevice));
 
+        cudaEventRecord(startEvent, 0);
+        
         block.x = 32;
         block.y = 32;
         block.z = 1;
