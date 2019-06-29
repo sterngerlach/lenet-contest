@@ -43,11 +43,24 @@
         }                                                                   \
     } while (0)
 
+void check_result(float* hostResult, float* gpuResult, int size)
+{
+    int i;
+
+    for (i = 0; i < size; ++i) {
+        if (fabs(hostResult[i] - gpuResult[i]) > 1.0e-3) {
+            printf("check_result() failed at index %d\n", i);
+            printf("GPU result: %f, Host result: %f\n",
+                   gpuResult[i], hostResult[i]);
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
 int main()
 {
     int imageCount = 0;
     char imageFileName[64];
-    char s[32];
 
     float* hostImage;
 
@@ -97,6 +110,8 @@ int main()
     cudaEvent_t startEvent;
     cudaEvent_t stopEvent;
     float elapsedTime;
+    double gpuTimeSum = 0.0;
+    double hostTimeSum = 0.0;
     
     cudaEventCreate(&startEvent);
     cudaEventCreate(&stopEvent);
@@ -224,10 +239,13 @@ int main()
 
     printf("\n");
 
-    while (1) {
+    for (imageCount = 0; imageCount < 1000; ++imageCount) {
         sprintf(imageFileName, "%simage%03d.txt", IMAGE_FILE, imageCount);
-        printf("file: %s\n", imageFileName);
-        fflush(stdout);
+
+        if (imageCount % 100 == 0) {
+            printf("file: %s\n", imageFileName);
+            fflush(stdout);
+        }
 
         read_params(imageFileName, hostImage, IMAGE_SIZE);
         norm_image(hostImage, IMAGE_SIZE);
@@ -236,13 +254,12 @@ int main()
         /* print_params("IMAGE", hostImage, IMAGE_SIZE); */
 
         /* Show image */
-        show_image(hostImage, 28);
-
-        printf("\n");
+        /* show_image(hostImage, 28); */
+        /* printf("\n"); */
         
         /* Feed-forward (CPU) */
-        printf("Feed forward ...\n");
-        fflush(stdout);
+        /* printf("Feed forward ...\n"); */
+        /* fflush(stdout); */
 
         cudaEventRecord(startEvent, 0);
 
@@ -265,18 +282,17 @@ int main()
         cudaEventRecord(stopEvent, 0);
         cudaEventSynchronize(stopEvent);
         cudaEventElapsedTime(&elapsedTime, startEvent, stopEvent);
-        
-        printf("\n");
-        printf("CPU: time: %f ms\n", elapsedTime);
-        printf("\n");
+        hostTimeSum += (double)elapsedTime;
+
+        /* printf("CPU: time: %f ms\n", elapsedTime); */
         
         /* Print result */
-        print_all_params(hostFc2Out, 10);
-        printf("\n");
+        /* print_all_params(hostFc2Out, 10); */
+        /* printf("\n"); */
 
         /* Feed-Forward (GPU) */
-        printf("Feed forward (GPU) ...\n");
-        fflush(stdout);
+        /* printf("Feed forward (GPU) ...\n"); */
+        /* fflush(stdout); */
 
         cudaEventRecord(startEvent, 0);
 
@@ -378,29 +394,19 @@ int main()
         cudaEventRecord(stopEvent, 0);
         cudaEventSynchronize(stopEvent);
         cudaEventElapsedTime(&elapsedTime, startEvent, stopEvent);
-        
-        printf("\n");
-        printf("GPU: time: %f ms\n", elapsedTime);
-        printf("\n");
+        gpuTimeSum += elapsedTime;
+
+        /* printf("GPU: time: %f ms\n", elapsedTime); */
+
+        check_result(hostFc2Out, gpuFc2Out, 10);
         
         /* Print result */
-        print_all_params(gpuFc2Out, 10);
-        printf("\n");
-
-        ++imageCount;
-
-        if (imageCount == 1000)
-            imageCount = 0;
-
-        printf("Write next image? (y or n): ");
-        scanf("%s", s);
-        printf("\n");
-
-        if (s[0] == 'y')
-            continue;
-        
-        break;
+        /* print_all_params(gpuFc2Out, 10); */
+        /* printf("\n"); */
     }
+
+    printf("GPU implementation is %f times faster than CPU\n",
+           hostTimeSum / gpuTimeSum);
 
     /* Free device memory */
     CUDA_SAFE_CALL(cudaFree(devImage));
