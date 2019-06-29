@@ -77,5 +77,10 @@ __global__ void classifier_gpu_blocked_and_relu(
     float* devOutput, int osize,
     float* devWeight, float* devBias);
 
+__global__ void classifier_gpu_blocked_and_softmax(
+    float* devInput, int isize,
+    float* devOutput, int osize,
+    float* devWeight, float* devBias);
+
 #endif /* HEADER_H */
 
