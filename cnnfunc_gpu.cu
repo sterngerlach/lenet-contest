@@ -25,20 +25,63 @@ __global__ void convolution_gpu_naive(
 
     float* pWeight = devWeight + ochOffset;
     float* pInput = devInput + strideOffset;
+    float sum;
     
     if (ocol >= osize || orow >= osize || och >= ochan)
         return;
 
-    devOutput[outputIdx] = 0.0f;
-
+    sum = devBias[och];
+    
     for (krow = 0; krow < ksize; ++krow)
         for (kcol = 0; kcol < ksize; ++kcol)
             for (kch = 0; kch < ichan; ++kch)
-                devOutput[outputIdx] +=
-                    pWeight[kch * ksize * ksize + krow * ksize + kcol] *
-                    pInput[kch * isize * isize + krow * isize + kcol];
+                sum += pWeight[kch * ksize * ksize + krow * ksize + kcol] *
+                       pInput[kch * isize * isize + krow * isize + kcol];
+
+    devOutput[outputIdx] = sum;
+}
+
+__host__ void im2col(
+    float* input, int isize, int ichan,
+    float* output,
+    int ksize, int stride)
+{
+    int orow;
+    int ocol;
+    int kch;
+    int krow;
+    int kcol;
+
+    int osize = (isize - ksize) / stride + 1;
     
-    devOutput[outputIdx] += devBias[och];
+    for (orow = 0; orow < osize; ++orow)
+        for (ocol = 0; ocol < osize; ++ocol)
+            for (kch = 0; kch < ichan; ++kch)
+                for (krow = 0; krow < ksize; ++krow)
+                    for (kcol = 0; kcol < ksize; ++kcol)
+                        *(output++) = *(input + kch * isize * isize + 
+                                        (krow + orow * stride) * isize +
+                                        (kcol + ocol * stride));
+}
+
+__global__ void im2col_gpu(
+    float* devInput, int isize, int ichan,
+    float* devOutput, int osize,
+    int ksize, int stride)
+{
+    int ocol = threadIdx.x + blockIdx.x * blockDim.x;
+    int orow = threadIdx.y + blockIdx.y * blockDim.y;
+    int kch = blockIdx.z;
+    int krow;
+    int kcol;
+
+    for (krow = 0; krow < ksize; ++krow)
+        for (kcol = 0; kcol < ksize; ++kcol)
+            *(devOutput + (orow * osize + ocol) * ksize * ksize * ichan +
+              kch * ksize * ksize + krow * ksize + kcol) =
+                *(devInput + kch * isize * isize +
+                  (krow + orow * stride) * isize +
+                  (kcol + ocol * stride));
 }
 
 __global__ void maxpooling_gpu_naive(
