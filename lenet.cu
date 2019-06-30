@@ -441,6 +441,53 @@ __global__ void classifier_gpu_blocked_and_relu_template(
 }
 
 template <int BlockSize, int InputSize, int OutputSize>
+__global__ void classifier_gpu_blocked_and_relu_template_2(
+    float* devInput, float* devOutput,
+    float* devWeight, float* devBias)
+{
+    int i;
+    int j;
+    int k;
+
+    int weightIdxBegin = InputSize * (BlockSize * blockIdx.y);
+    int weightIdxEnd = weightIdxBegin + InputSize;
+    int outputIdx = threadIdx.y + blockDim.y * blockIdx.y;
+
+    float tmp = 0.0f;
+
+    __shared__ float subInput[BlockSize];
+    __shared__ float subWeight[BlockSize][BlockSize];
+    
+    for (i = weightIdxBegin, j = 0; i < weightIdxEnd;
+         i += BlockSize, j += BlockSize) {
+        /* This implementation wastes so many threads */
+        if (threadIdx.x == 0)
+            if (j + threadIdx.y < InputSize)
+                subInput[threadIdx.y] = devInput[j + threadIdx.y];
+            else
+                subInput[threadIdx.y] = 0.0f;
+
+        subWeight[threadIdx.y][threadIdx.x] =
+            devWeight[i + InputSize * threadIdx.y + threadIdx.x];
+
+        __syncthreads();
+        
+        if (threadIdx.x == 0)
+            #pragma unroll
+            for (k = 0; k < BlockSize; ++k)
+                tmp += subWeight[threadIdx.y][k] * subInput[k];
+    }
+    
+    if (threadIdx.x == 0)
+        if (outputIdx < OutputSize)
+            if (tmp > 0)
+                devOutput[outputIdx] = tmp;
+            else
+                devOutput[outputIdx] = 0.0f;
+}
+
+
+template <int BlockSize, int InputSize, int OutputSize>
 __global__ void classifier_gpu_blocked_and_softmax_template(
     float* devInput, float* devOutput,
     float* devWeight, float* devBias)
@@ -730,7 +777,7 @@ int main()
         convolution_gpu_shared_memory_2_maxpooling_2x2<4, 12, 20, 8, 50, 5, 4, 2><<<grid, block>>>(
             devPool1Out, NULL, devConv2Weight, devConv2Bias, devPool2Out);
         
-        block.x = 1;
+        block.x = 32;
         block.y = 32;
         block.z = 1;
 
@@ -738,7 +785,7 @@ int main()
         grid.y = (500 + block.y - 1) / block.y;
         grid.z = 1;
 
-        classifier_gpu_blocked_and_relu_template<32, 800, 500><<<grid, block>>>(
+        classifier_gpu_blocked_and_relu_template_2<32, 800, 500><<<grid, block>>>(
             devPool2Out, devFc1Out, devFc1Weight, devFc1Bias);
         
         block.x = 1;
