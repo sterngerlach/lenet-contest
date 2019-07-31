@@ -250,3 +250,50 @@ __global__ void classifier_gpu_blocked_and_relu_template(
             devOutput[outputIdx] = 0.0f;
 }
 
+template <int BlockSize, int InputSize, int OutputSize>
+__global__ void classifier_gpu_blocked_and_softmax_template(
+    float* devInput, float* devOutput,
+    float* devWeight, float* devBias)
+{
+    int i;
+    int k;
+
+    // int weightIdxBegin = InputSize * (BlockSize * blockIdx.y);
+    // int outputIdx = threadIdx.y + blockDim.y * blockIdx.y;
+    int weightIdxBegin = 0;
+    int outputIdx = threadIdx.y;
+    
+    // float* pWeight = devWeight + weightIdxBegin + InputSize * threadIdx.y;
+    float* pWeight = devWeight + InputSize * threadIdx.y;
+    float tmp = 0.0f;
+    float sum = 0.0f;
+
+    __shared__ float subInput[BlockSize];
+    __shared__ float subOutput[OutputSize];
+    
+    for (i = 0; i < InputSize; i += BlockSize) {
+        if (i + threadIdx.y < InputSize)
+            subInput[threadIdx.y] = devInput[i + threadIdx.y];
+        else
+            subInput[threadIdx.y] = 0.0f;
+        
+        __syncthreads();
+        
+        #pragma unroll
+        for (k = 0; k < BlockSize; ++k)
+            tmp += pWeight[i + k] * subInput[k];
+    }
+    
+    if (outputIdx < OutputSize)
+        subOutput[outputIdx] = expf(tmp);
+
+    __syncthreads();
+    
+    #pragma unroll
+    for (k = 0; k < OutputSize; ++k)
+        sum += subOutput[k];
+    
+    if (outputIdx < OutputSize)
+        devOutput[outputIdx] = subOutput[outputIdx] / sum;
+}
+

@@ -160,9 +160,8 @@ __global__ void convolution_gpu_shared_memory_2_maxpooling_2x2(
         #pragma unroll
         for (kcol = 0; kcol < KernelSize; ++kcol)
             // sharedResult[ich][threadIdx.y][threadIdx.x] +=
-            tmp += 
-                sharedWeight[ich][krow][kcol] *
-                sharedInput[ich][threadIdx.y + krow][threadIdx.x + kcol];
+            tmp += sharedWeight[ich][krow][kcol] *
+                   sharedInput[ich][threadIdx.y + krow][threadIdx.x + kcol];
     
     sharedResult[ich][threadIdx.y][threadIdx.x] = tmp;
 
@@ -243,46 +242,42 @@ __global__ void classifier_gpu_blocked_and_relu_template_2(
 }
 
 template <int BlockSize, int InputSize, int OutputSize>
-__global__ void classifier_gpu_blocked_and_softmax_template(
+__global__ void classifier_gpu_blocked_and_softmax_template_2(
     float* devInput, float* devOutput,
     float* devWeight, float* devBias)
 {
-    int i;
     int k;
-
-    int weightIdxBegin = InputSize * (BlockSize * blockIdx.y);
-    int outputIdx = threadIdx.y + blockDim.y * blockIdx.y;
+    int outputIdx = threadIdx.y;
     
-    float* pWeight = devWeight + weightIdxBegin + InputSize * threadIdx.y;
+    float* pInput = devInput + BlockSize * threadIdx.x;
+    float* pWeight = devWeight + InputSize * threadIdx.y + BlockSize * threadIdx.x;
     float tmp = 0.0f;
     float sum = 0.0f;
 
-    __shared__ float subInput[BlockSize];
-    __shared__ float subOutput[OutputSize];
-    
-    for (i = 0; i < InputSize; i += BlockSize) {
-        if (i + threadIdx.y < InputSize)
-            subInput[threadIdx.y] = devInput[i + threadIdx.y];
-        else
-            subInput[threadIdx.y] = 0.0f;
+    __shared__ float subOutput[OutputSize][InputSize / BlockSize];
         
-        __syncthreads();
-        
-        #pragma unroll
-        for (k = 0; k < BlockSize; ++k)
-            tmp += pWeight[i + k] * subInput[k];
-    }
-    
-    if (outputIdx < OutputSize)
-        subOutput[outputIdx] = expf(tmp);
-
-    __syncthreads();
-    
     #pragma unroll
-    for (k = 0; k < OutputSize; ++k)
-        sum += subOutput[k];
+    for (k = 0; k < BlockSize; ++k)
+        tmp += pWeight[k] * pInput[k];
     
-    devOutput[outputIdx] = subOutput[outputIdx] / sum;
+    subOutput[outputIdx][threadIdx.x] = tmp;
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        #pragma unroll
+        for (k = 1; k < InputSize / BlockSize; ++k)
+            subOutput[outputIdx][0] += subOutput[outputIdx][k];
+
+        subOutput[outputIdx][0] = expf(subOutput[outputIdx][0]);
+
+        __syncthreads();
+    
+        #pragma unroll
+        for (k = 0; k < OutputSize; ++k)
+            sum += subOutput[k][0];
+        
+        devOutput[outputIdx] = subOutput[outputIdx][0] / sum;
+    }
 }
 
 int main()
@@ -344,7 +339,7 @@ int main()
     dim3 blockFc1(16, 16, 1);
     dim3 gridFc1(1, (500 + blockFc1.y - 1) / blockFc1.y, 1);
 
-    dim3 blockFc2(1, 16, 1);
+    dim3 blockFc2(500 / 20, 10, 1);
     dim3 gridFc2(1, 1, 1);
 
     cudaEvent_t startEvent;
@@ -532,8 +527,8 @@ int main()
             <16, 800, 500><<<gridFc1, blockFc1>>>(
                 devPool2Out, devFc1Out, devFc1Weight, devFc1Bias);
 
-        classifier_gpu_blocked_and_softmax_template
-            <16, 500, 10><<<gridFc2, blockFc2>>>(
+        classifier_gpu_blocked_and_softmax_template_2
+            <20, 500, 10><<<gridFc2, blockFc2>>>(
                 devFc1Out, devFc2Out, devFc2Weight, devFc2Bias);
 
         CUDA_SAFE_CALL(cudaMemcpy(gpuFc2Out, devFc2Out,
