@@ -43,6 +43,7 @@ __host__ void show_result(const char* path, float* softmax, int size);
 __host__ void norm_image(float* image, int size); 
 __host__ void show_image(float* normed_image, int size);
 
+/*
 __global__ void convolution_gpu_naive(
     float* devInput, int isize, int ichan,
     float* devOutput, int osize, int ochan,
@@ -81,6 +82,7 @@ __global__ void classifier_gpu_blocked_and_softmax(
     float* devInput, int isize,
     float* devOutput, int osize,
     float* devWeight, float* devBias);
+*/
 
 #endif /* HEADER_H */
 
