@@ -233,6 +233,9 @@ __global__ void classifier_gpu_blocked_and_relu_template_2(
         for (k = 0; k < BlockSize; ++k)
             tmp += subWeight[threadIdx.y][k] * subInput[0][k];
     }
+
+    if (outputIdx < OutputSize)
+        tmp += devBias[outputIdx];
     
     if (threadIdx.x == 0 && outputIdx < OutputSize)
         if (tmp > 0)
@@ -267,6 +270,8 @@ __global__ void classifier_gpu_blocked_and_softmax_template_2(
         #pragma unroll
         for (k = 1; k < InputSize / BlockSize; ++k)
             subOutput[outputIdx][0] += subOutput[outputIdx][k];
+
+        subOutput[outputIdx][0] += devBias[outputIdx];
 
         subOutput[outputIdx][0] = expf(subOutput[outputIdx][0]);
 
