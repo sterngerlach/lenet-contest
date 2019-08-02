@@ -67,6 +67,74 @@ void check_result(float* hostResult, float* gpuResult, int size)
     }
 }
 
+template <int InputSize,
+          int OutputSize, int OutputChannels,
+          int PoolOutputSize>
+__global__ void convolution_gpu_shared_memory_2_maxpooling_2x2_1ch(
+    float* devInput, float* devOutput,
+    float* devWeight, float* devBias,
+    float* devPoolOutput)
+{
+    /* Assumptions: blockDim.x == 4, blockDim.y == 4 */
+    
+    const int KernelSize = 5;
+
+    const int icol = threadIdx.x;
+    const int irow = threadIdx.y;
+    const int och = blockIdx.z;
+
+    int kcol;
+    int krow;
+
+    float tmp = 0.0f;
+    float tmp0;
+    float tmp1;
+    
+    __shared__ float sharedInput[InputSize][InputSize];
+    __shared__ float sharedWeight[KernelSize][KernelSize];
+    __shared__ float sharedResult[OutputSize][OutputSize];
+
+    /*
+     * Bring input data to shared memory
+     */
+    sharedInput[irow][icol] = devInput[InputSize * irow + icol];
+    __syncthreads();
+    
+    /*
+     * Bring weight data to shared memory
+     */
+    if (icol < KernelSize && irow < KernelSize)
+        sharedWeight[irow][icol] =
+            devWeight[och * KernelSize * KernelSize + irow * KernelSize + icol];
+    
+    __syncthreads();
+
+    if (icol >= OutputSize || irow >= OutputSize)
+        return;
+    
+    #pragma unroll
+    for (krow = 0; krow < KernelSize; ++krow)
+        #pragma unroll
+        for (kcol = 0; kcol < KernelSize; ++kcol)
+            tmp += sharedInput[irow + krow][icol + kcol] *
+                   sharedWeight[krow][kcol];
+    
+    sharedResult[irow][icol] = tmp;
+    __syncthreads();
+    
+    if (irow % 2 || icol % 2)
+        return;
+
+    tmp0 = fmaxf(sharedResult[irow][icol],
+                 sharedResult[irow][icol + 1]);
+    tmp1 = fmaxf(sharedResult[irow + 1][icol],
+                 sharedResult[irow + 1][icol + 1]);
+    
+    devPoolOutput[och * PoolOutputSize * PoolOutputSize +
+                  (irow / 2) * PoolOutputSize + (icol / 2)]
+                  = fmaxf(tmp0, tmp1) + devBias[och];
+}
+
 template <int BlockSize,
           int InputSize, int InputChannels,
           int OutputSize, int OutputChannels,
@@ -103,6 +171,8 @@ __global__ void convolution_gpu_shared_memory_2_maxpooling_2x2(
     float* pWeight = devWeight + ochOffset;
     float tmp = 0.0f;
     float sum = 0.0f;
+    float tmp0;
+    float tmp1;
     
     __shared__ float sharedInput[InputChannels][SharedInputSize][SharedInputSize];
     __shared__ float sharedWeight[InputChannels][KernelSize][KernelSize];
@@ -128,14 +198,15 @@ __global__ void convolution_gpu_shared_memory_2_maxpooling_2x2(
     if (irow < InputSize)
         sharedInput[ich][threadIdx.y + KernelRadius * 2][threadIdx.x] =
             devInput[tmpOffset + InputSize * KernelRadius * 2];
-    
-    icol = ocol + KernelRadius * 2;
-    irow = orow + KernelRadius * 2;
 
     if (icol < InputSize && irow < InputSize)
         sharedInput[ich][threadIdx.y + KernelRadius * 2][threadIdx.x + KernelRadius * 2] =
             devInput[tmpOffset + InputSize * KernelRadius * 2 + KernelRadius * 2];
     
+    /*
+     * Bring weight data to shared memory
+     */
+
     /*
      * Hack: this code works because KernelSize == 5,
      * blockDim.x == blockDim.y == 4
@@ -158,74 +229,90 @@ __global__ void convolution_gpu_shared_memory_2_maxpooling_2x2(
                    sharedInput[ich][threadIdx.y + krow][threadIdx.x + kcol];
     
     sharedResult[ich][threadIdx.y][threadIdx.x] = tmp;
+    __syncthreads();
+    
+    if (ich != 0)
+        return;
 
+    sum = devBias[och];
+    
+    #pragma unroll
+    for (i = 0; i < InputChannels; ++i)
+        sum += sharedResult[i][threadIdx.y][threadIdx.x];
+
+    sharedResult[0][threadIdx.y][threadIdx.x] = sum;
     __syncthreads();
 
-    if (ich == 0) {
-        sum = devBias[och];
-        
-        #pragma unroll
-        for (i = 0; i < InputChannels; ++i)
-            sum += sharedResult[i][threadIdx.y][threadIdx.x];
+    /* Max pooling */
+    if (threadIdx.x % 2 || threadIdx.y % 2)
+        return;
 
-        sharedResult[0][threadIdx.y][threadIdx.x] = sum;
-        __syncthreads();
-
-        /* Max pooling */
-        if (threadIdx.x % 2 == 0 && threadIdx.y % 2 == 0) {
-            float tmp0;
-            float tmp1;
-
-            tmp0 = fmaxf(sharedResult[0][threadIdx.y][threadIdx.x],
-                         sharedResult[0][threadIdx.y][threadIdx.x + 1]);
-            tmp1 = fmaxf(sharedResult[0][threadIdx.y + 1][threadIdx.x],
-                         sharedResult[0][threadIdx.y + 1][threadIdx.x + 1]);
-            
-            devPoolOutput[och * PoolOutputSize * PoolOutputSize +
-                          (orow / 2) * PoolOutputSize + (ocol / 2)]
-                          = fmaxf(tmp0, tmp1);
-        }
-    }
+    
+    tmp0 = fmaxf(sharedResult[0][threadIdx.y][threadIdx.x],
+                 sharedResult[0][threadIdx.y][threadIdx.x + 1]);
+    tmp1 = fmaxf(sharedResult[0][threadIdx.y + 1][threadIdx.x],
+                 sharedResult[0][threadIdx.y + 1][threadIdx.x + 1]);
+    
+    devPoolOutput[och * PoolOutputSize * PoolOutputSize +
+                  (orow / 2) * PoolOutputSize + (ocol / 2)]
+                  = fmaxf(tmp0, tmp1);
 }
 
-template <int BlockSize, int InputSize, int OutputSize>
-__global__ void classifier_gpu_blocked_and_relu_template_2(
+template <int ChunkSize, int BlockSize, int InputSize, int OutputSize>
+__global__ void classifier_gpu_blocked_and_relu_template_3(
     float* devInput, float* devOutput,
     float* devWeight, float* devBias)
 {
-    int i;
-    int k;
-
-    int weightIdxBegin = InputSize * (BlockSize * blockIdx.y);
-    int outputIdx = threadIdx.y + blockDim.y * blockIdx.y;
+    float* pInput = devInput + threadIdx.x;
+    float* pWeight = devWeight + InputSize * blockIdx.x + threadIdx.x;
+    float tmpResult;
     
-    float* pWeight = devWeight + weightIdxBegin + InputSize * threadIdx.y + threadIdx.x;
-    float tmp = 0.0f;
+    __shared__ float subResult[BlockSize];
 
-    __shared__ float subInput[BlockSize];
-    __shared__ float subWeight[BlockSize][BlockSize];
-    __shared__ float subOutput[BlockSize][BlockSize];
-
-    subOutput[threadIdx.y][threadIdx.x] = 0.0f;
+    subResult[threadIdx.x] = 0.0f;
     __syncthreads();
     
-    for (i = 0; i < InputSize; i += BlockSize) {
-        /* This implementation wastes so many threads */
-        subInput[threadIdx.y] = devInput[i + threadIdx.y];
-        subWeight[threadIdx.y][threadIdx.x] = pWeight[i];
-        __syncthreads();
+    if (threadIdx.x >= InputSize / ChunkSize)
+        return;
 
-        subOutput[threadIdx.y][threadIdx.x] +=
-            subWeight[threadIdx.y][threadIdx.x] * subInput[threadIdx.x];
-    }
+    subResult[threadIdx.x] =
+        pInput[0] * pWeight[0] +
+        pInput[InputSize / ChunkSize] * pWeight[InputSize / ChunkSize] +
+        pInput[2 * InputSize / ChunkSize] * pWeight[2 * InputSize / ChunkSize] +
+        pInput[3 * InputSize / ChunkSize] * pWeight[3 * InputSize / ChunkSize];
 
-    if (threadIdx.x == 0 && outputIdx < OutputSize) {
-        #pragma unroll
-        for (k = 0; k < BlockSize; ++k)
-            tmp += subOutput[threadIdx.y][k];
-        
-        tmp += devBias[outputIdx];
-        devOutput[outputIdx] = fmaxf(tmp, 0.0f);
+    __syncthreads();
+    
+    if (threadIdx.x < 128)
+        subResult[threadIdx.x] += subResult[threadIdx.x + 128];
+    __syncthreads();
+
+    if (threadIdx.x < 64)
+        subResult[threadIdx.x] += subResult[threadIdx.x + 64];
+    __syncthreads();
+
+    if (threadIdx.x < 32)
+        subResult[threadIdx.x] += subResult[threadIdx.x + 32];
+    __syncthreads();
+
+    if (threadIdx.x < 16)
+        subResult[threadIdx.x] += subResult[threadIdx.x + 16];
+    __syncthreads();
+
+    if (threadIdx.x < 8)
+        subResult[threadIdx.x] += subResult[threadIdx.x + 8];
+    __syncthreads();
+
+    if (threadIdx.x < 4)
+        subResult[threadIdx.x] += subResult[threadIdx.x + 4];
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        tmpResult = subResult[0] + subResult[1] +
+                    subResult[2] + subResult[3] +
+                    devBias[blockIdx.x];
+
+        devOutput[blockIdx.x] = fmaxf(tmpResult, 0.0f);
     }
 }
 
@@ -252,13 +339,12 @@ __global__ void classifier_gpu_blocked_and_softmax_template_2(
     __syncthreads();
 
     if (threadIdx.x == 0) {
-        tmp = 0.0f;
+        tmp = devBias[outputIdx];
 
         #pragma unroll
         for (k = 0; k < InputSize / BlockSize; ++k)
             tmp += subOutput[outputIdx][k];
 
-        tmp += devBias[outputIdx];
         tmp = expf(tmp);
         subOutput[outputIdx][0] = tmp;
 
@@ -322,14 +408,18 @@ int main()
     dim3 block;
     dim3 grid;
 
-    dim3 blockConv1(4, 4, 1);
-    dim3 gridConv1(8, 8, 20);
+    // dim3 blockConv1(4, 4, 1);
+    // dim3 gridConv1(8, 8, 20);
+    dim3 blockConv1(28, 28, 1);
+    dim3 gridConv1(1, 1, 20);
 
     dim3 blockConv2(4, 4, 20);
     dim3 gridConv2(4, 4, 50);
 
-    dim3 blockFc1(20, 20, 1);
-    dim3 gridFc1(1, (500 + blockFc1.y - 1) / blockFc1.y, 1);
+    // dim3 blockFc1(20, 20, 1);
+    // dim3 gridFc1(1, (500 + blockFc1.y - 1) / blockFc1.y, 1);
+    dim3 blockFc1(256, 1, 1);
+    dim3 gridFc1(500, 1, 1);
 
     dim3 blockFc2(500 / 20, 10, 1);
     dim3 gridFc2(1, 1, 1);
@@ -431,7 +521,8 @@ int main()
                               FC2_W_SIZE * sizeof(float)));
     CUDA_SAFE_CALL(cudaMalloc((void**)&devFc2Bias,
                               FC2_B_SIZE * sizeof(float)));
-    CUDA_SAFE_CALL(cudaMalloc((void**)&devFc2Out,
+
+    CUDA_SAFE_CALL(cudaMallocHost((void**)&devFc2Out,
                               FC2_OUT_SIZE * sizeof(float)));
     
     printf("Transferring weight and bias data from host ...\n");
@@ -507,16 +598,22 @@ int main()
                                   cudaMemcpyHostToDevice));
         cudaEventRecord(startEvent, 0);
 
-        convolution_gpu_shared_memory_2_maxpooling_2x2
+        /* convolution_gpu_shared_memory_2_maxpooling_2x2
             <4, 28, 1, 24, 20, 12><<<gridConv1, blockConv1>>>(
+                devImage, NULL, devConv1Weight, devConv1Bias, devPool1Out); */
+        convolution_gpu_shared_memory_2_maxpooling_2x2_1ch
+            <28, 24, 20, 12><<<gridConv1, blockConv1>>>(
                 devImage, NULL, devConv1Weight, devConv1Bias, devPool1Out);
 
         convolution_gpu_shared_memory_2_maxpooling_2x2
             <4, 12, 20, 8, 50, 4><<<gridConv2, blockConv2>>>(
                 devPool1Out, NULL, devConv2Weight, devConv2Bias, devPool2Out);
 
-        classifier_gpu_blocked_and_relu_template_2
+        /* classifier_gpu_blocked_and_relu_template_2
             <20, 800, 500><<<gridFc1, blockFc1>>>(
+                devPool2Out, devFc1Out, devFc1Weight, devFc1Bias); */
+        classifier_gpu_blocked_and_relu_template_3
+            <4, 256, 800, 500><<<gridFc1, blockFc1>>>(
                 devPool2Out, devFc1Out, devFc1Weight, devFc1Bias);
 
         classifier_gpu_blocked_and_softmax_template_2
@@ -559,7 +656,7 @@ int main()
 
     CUDA_SAFE_CALL(cudaFree(devFc2Weight));
     CUDA_SAFE_CALL(cudaFree(devFc2Bias));
-    CUDA_SAFE_CALL(cudaFree(devFc2Out));
+    CUDA_SAFE_CALL(cudaFreeHost(devFc2Out));
 
     /* Free host memory */
     free(hostImage);
